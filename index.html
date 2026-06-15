@@ -209,9 +209,10 @@
   code.k{background:#f1f1f1;padding:1px 5px;border-radius:4px;font-size:12px}
   /* Filter bar */
   .filterbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
-  .filterbar select{border:1px solid var(--border2);border-radius:7px;padding:6px 9px;background:#fff;color:var(--text)}
-  .filterbar .lbl{font-size:12px;color:var(--muted2);font-weight:600}
-  .filterbar .clear{border:none;background:none;color:var(--p3);font-size:12.5px;font-weight:600}
+  .filterbar select{border:1px solid var(--border2);border-radius:7px;padding:6px 9px;background:var(--panel);color:var(--text);font-weight:600}
+  .filterbar .lbl{font-size:12px;color:var(--text);font-weight:700}
+  .filterbar .clear{border:1px solid var(--accent);background:var(--accent-soft);color:var(--accent-dark);font-size:12.5px;font-weight:700;padding:6px 11px;border-radius:7px}
+  .filterbar .clear:hover{filter:brightness(.97)}
   /* Tags input */
   .tagedit{display:flex;flex-wrap:wrap;gap:6px;align-items:center;border:1px solid var(--border2);border-radius:7px;padding:6px}
   .tagedit input{border:none;outline:none;flex:1;min-width:80px;padding:3px}
@@ -331,8 +332,7 @@
     <div class="nav-item" onclick="toggleTheme()" style="margin-top:14px"><span id="theme-ico">🌙</span> <span id="theme-lbl">Dark mode</span></div>
 
     <div class="conn-status" id="conn">
-      <span class="conn-dot off"></span> Local mode
-      <div style="margin-top:6px"><button class="btn sm" onclick="openSettings()">⚙ Connect Supabase</button></div>
+      <span class="conn-dot on"></span> Synced to cloud
     </div>
   </aside>
 
@@ -449,27 +449,6 @@
   </div>
 </div>
 
-<!-- Settings / Supabase modal -->
-<div class="overlay" id="settings-overlay">
-  <div class="modal">
-    <div class="modal-h"><span>Connect Supabase</span><button class="x" onclick="closeSettings()">×</button></div>
-    <div class="modal-b">
-      <p style="margin-top:0;color:var(--muted)">Sync tasks and people across devices. Paste your project's URL and anon (public) key. Leave blank to keep using this device's local storage.</p>
-      <div class="field"><label>Project URL</label><input id="sb-url" placeholder="https://xxxx.supabase.co"></div>
-      <div class="field"><label>Anon public key</label><input id="sb-key" placeholder="eyJhbGci..."></div>
-      <details style="margin-top:6px">
-        <summary style="cursor:pointer;font-weight:600;color:var(--p3)">Show one-time table setup SQL</summary>
-        <p style="color:var(--muted);font-size:12.5px">Run this in the Supabase SQL editor once:</p>
-        <pre style="background:#1e1e1e;color:#e6e6e6;padding:12px;border-radius:8px;overflow:auto;font-size:12px" id="sql-block"></pre>
-      </details>
-    </div>
-    <div class="modal-f">
-      <button class="btn ghost" onclick="disconnectSupabase()">Disconnect</button>
-      <button class="btn primary" onclick="saveSettings()">Connect</button>
-    </div>
-  </div>
-</div>
-
 <div class="toast" id="toast"></div>
 
 <script>
@@ -480,42 +459,9 @@ const LS = {
 let state = { people:[], tasks:[], view:'all', editingId:null, parsed:[],
   filterPerson:'', filterTag:'', tagBuffer:[], calRef:new Date(), dashCalCollapsed:false, calSelectedDate:null };
 let sb = null; // supabase client
-// default project — data syncs here out of the box (persists across devices)
-const DEFAULT_SB = {
-  url:'https://ajutpvdjgcwjpothwhzi.supabase.co',
-  key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqdXRwdmRqZ2N3anBvdGh3aHppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MjU1MjMsImV4cCI6MjA5NzEwMTUyM30.QRGBmgXUz1Oai7UTwQCUyel8nWZMmJmOm-SXw7gkqrM'
-};
-let _sbSaved = localStorage.getItem(LS.sb);
-let sbCfg = _sbSaved==='local' ? null : (JSON.parse(_sbSaved || 'null') || DEFAULT_SB);
-
-const SQL = `-- People
-create table if not exists people (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  email text,
-  created_at timestamptz default now()
-);
--- Tasks
-create table if not exists tasks (
-  id uuid primary key default gen_random_uuid(),
-  title text not null,
-  notes text,
-  assignee_id uuid references people(id) on delete set null,
-  due_date date,
-  due_time text,
-  priority int default 4,
-  completed boolean default false,
-  reminders jsonb default '[]'::jsonb,
-  tags jsonb default '[]'::jsonb,
-  recurrence jsonb,
-  done_dates jsonb default '[]'::jsonb,
-  created_at timestamptz default now()
-);
--- Demo: allow anon access (tighten with RLS + auth for production)
-alter table people enable row level security;
-alter table tasks  enable row level security;
-create policy "anon people" on people for all using (true) with check (true);
-create policy "anon tasks"  on tasks  for all using (true) with check (true);`;
+// Cloud sync — credentials are baked into the app and not user-editable.
+const SUPABASE_URL = 'https://ajutpvdjgcwjpothwhzi.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqdXRwdmRqZ2N3anBvdGh3aHppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MjU1MjMsImV4cCI6MjA5NzEwMTUyM30.QRGBmgXUz1Oai7UTwQCUyel8nWZMmJmOm-SXw7gkqrM';
 
 const PALETTE=['#d1453b','#246fe0','#058527','#eb8909','#a970ff','#ff9933','#0aa3a3','#e64980'];
 
@@ -572,41 +518,17 @@ async function dbDelTask(id){
 
 /* ============================ SUPABASE ============================ */
 function initSupabase(){
-  if(sbCfg && sbCfg.url && sbCfg.key && window.supabase){
-    try{ sb = window.supabase.createClient(sbCfg.url, sbCfg.key); }
+  if(window.supabase){
+    try{ sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY); }
     catch(e){ sb=null; }
   }
   updateConnUI();
 }
 function updateConnUI(){
   const el=document.getElementById('conn');
-  if(sb){
-    el.innerHTML='<span class="conn-dot on"></span> Synced via Supabase<div style="margin-top:6px"><button class="btn sm" onclick="openSettings()">⚙ Settings</button></div>';
-  }else{
-    el.innerHTML='<span class="conn-dot off"></span> Local mode (this device)<div style="margin-top:6px"><button class="btn sm" onclick="openSettings()">⚙ Connect Supabase</button></div>';
-  }
-}
-function openSettings(){
-  document.getElementById('sb-url').value = sbCfg?.url||'';
-  document.getElementById('sb-key').value = sbCfg?.key||'';
-  document.getElementById('sql-block').textContent = SQL;
-  document.getElementById('settings-overlay').classList.add('show');
-}
-function closeSettings(){ document.getElementById('settings-overlay').classList.remove('show'); }
-async function saveSettings(){
-  const url=document.getElementById('sb-url').value.trim();
-  const key=document.getElementById('sb-key').value.trim();
-  if(!url||!key){ toast('Enter both URL and key, or Disconnect.'); return; }
-  sbCfg={url,key}; localStorage.setItem(LS.sb,JSON.stringify(sbCfg));
-  initSupabase();
-  if(!sb){ toast('Could not connect — check values.'); return; }
-  try{ await loadAll(); toast('Connected to Supabase ✓'); }
-  catch(e){ toast('Connected, but tables not found — run the setup SQL.'); }
-  closeSettings(); renderAll();
-}
-function disconnectSupabase(){
-  sb=null; sbCfg=null; localStorage.setItem(LS.sb,'local');
-  updateConnUI(); closeSettings(); loadAll().then(renderAll); toast('Switched to local mode.');
+  el.innerHTML = sb
+    ? '<span class="conn-dot on"></span> Synced to cloud'
+    : '<span class="conn-dot off"></span> Offline — saved on this device';
 }
 
 /* ============================ DICTATION ============================ */
@@ -1305,7 +1227,7 @@ async function boot(){
   }
   renderAll();
 }
-window.addEventListener('keydown',e=>{ if(e.key==='Escape'){closeTask();closePeople();closeSettings();closeSidebar();} });
+window.addEventListener('keydown',e=>{ if(e.key==='Escape'){closeTask();closePeople();closeSidebar();} });
 boot();
 </script>
 </body>
