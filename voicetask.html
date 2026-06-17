@@ -492,27 +492,45 @@ function saveLocal(){
 }
 function uid(){ return 'id-'+Math.random().toString(36).slice(2)+Date.now().toString(36); }
 
+function sbErr(action,error){
+  const msg=(error&&error.message)||'unknown error';
+  if(/relation .* does not exist|could not find the table|schema cache/i.test(msg))
+    toast('Cloud tables missing — run the one-time setup SQL in Supabase.');
+  else if(/row-level security|rls|permission|policy/i.test(msg))
+    toast('Cloud blocked the write (row-level security). Check table policies.');
+  else toast('Could not '+action+': '+msg);
+  console.error('[Supabase] '+action+' failed:', error);
+}
 async function dbAddPerson(p){
-  if(sb){ const {data}=await sb.from('people').insert({name:p.name,email:p.email}).select().single(); return data; }
+  if(sb){
+    const {data,error}=await sb.from('people').insert({name:p.name,email:p.email||null}).select().single();
+    if(error||!data){ sbErr('add person',error); throw (error||new Error('no data')); }
+    state.people.push(data); return data;
+  }
   p.id=uid(); state.people.push(p); saveLocal(); return p;
 }
 async function dbDelPerson(id){
-  if(sb){ await sb.from('people').delete().eq('id',id); }
+  if(sb){ const {error}=await sb.from('people').delete().eq('id',id); if(error){ sbErr('remove person',error); throw error; } }
   state.people=state.people.filter(x=>x.id!==id);
   state.tasks.forEach(t=>{ if(t.assignee_id===id) t.assignee_id=null; });
   saveLocal();
 }
 async function dbAddTask(t){
-  if(sb){ const {data}=await sb.from('tasks').insert(t).select().single(); return normalizeTask(data); }
+  if(sb){
+    const {data,error}=await sb.from('tasks').insert(t).select().single();
+    if(error||!data){ sbErr('save task',error); throw (error||new Error('no data')); }
+    const nt=normalizeTask(data); state.tasks.push(nt); return nt;
+  }
   t.id=uid(); state.tasks.push(t); saveLocal(); return t;
 }
 async function dbUpdateTask(id,patch){
-  if(sb){ const {data}=await sb.from('tasks').update(patch).eq('id',id).select().single();
+  if(sb){ const {data,error}=await sb.from('tasks').update(patch).eq('id',id).select().single();
+    if(error||!data){ sbErr('update task',error); throw (error||new Error('no data')); }
     const i=state.tasks.findIndex(x=>x.id===id); if(i>=0)state.tasks[i]=normalizeTask(data); return; }
   const t=state.tasks.find(x=>x.id===id); if(t)Object.assign(t,patch); saveLocal();
 }
 async function dbDelTask(id){
-  if(sb){ await sb.from('tasks').delete().eq('id',id); }
+  if(sb){ const {error}=await sb.from('tasks').delete().eq('id',id); if(error){ sbErr('delete task',error); throw error; } }
   state.tasks=state.tasks.filter(x=>x.id!==id); saveLocal();
 }
 
@@ -667,16 +685,19 @@ function renderPreview(){
 }
 async function commitParsed(){
   if(!state.parsed.length) return;
-  for(const p of state.parsed){
-    // auto-create unknown assignee
-    if(p._assigneeName && !p.assignee_id){
-      const np=await dbAddPerson({name:p._assigneeName.charAt(0).toUpperCase()+p._assigneeName.slice(1),email:''});
-      p.assignee_id=np.id;
+  let added=0;
+  try{
+    for(const p of state.parsed){
+      // auto-create unknown assignee
+      if(p._assigneeName && !p.assignee_id){
+        const np=await dbAddPerson({name:p._assigneeName.charAt(0).toUpperCase()+p._assigneeName.slice(1),email:''});
+        p.assignee_id=np.id;
+      }
+      const {_assigneeName,...clean}=p;
+      await dbAddTask(clean); added++;
     }
-    const {_assigneeName,...clean}=p;
-    await dbAddTask(clean);
-  }
-  toast(`Added ${state.parsed.length} task${state.parsed.length>1?'s':''} ✓`);
+  }catch(e){ renderAll(); return; }
+  toast(`Added ${added} task${added>1?'s':''} ✓`);
   discardParsed(); document.getElementById('dictation').value=''; renderAll();
 }
 function discardParsed(){ state.parsed=[]; document.getElementById('preview').classList.remove('show'); }
@@ -697,11 +718,14 @@ async function addPerson(){
   const name=document.getElementById('np-name').value.trim();
   const email=document.getElementById('np-email').value.trim();
   if(!name){ toast('Name required'); return; }
-  await dbAddPerson({name,email});
-  document.getElementById('np-name').value=''; document.getElementById('np-email').value='';
-  renderPeopleEdit(); renderPeopleNav();
+  try{
+    await dbAddPerson({name,email});
+    document.getElementById('np-name').value=''; document.getElementById('np-email').value='';
+    renderPeopleEdit(); renderPeopleNav();
+    toast('Added '+name+' ✓');
+  }catch(e){ /* error already shown via toast */ }
 }
-async function removePerson(id){ await dbDelPerson(id); renderPeopleEdit(); renderAll(); }
+async function removePerson(id){ try{ await dbDelPerson(id); }catch(e){ return; } renderPeopleEdit(); renderAll(); }
 function renderPeopleNav(){
   const el=document.getElementById('people-nav');
   el.innerHTML = state.people.map(p=>{
@@ -773,8 +797,10 @@ async function saveTask(){
     tags:state.tagBuffer.slice(),
     recurrence:curRecurrence()
   };
-  if(state.editingId) await dbUpdateTask(state.editingId,patch);
-  else { patch.completed=false; await dbAddTask(patch); }
+  try{
+    if(state.editingId) await dbUpdateTask(state.editingId,patch);
+    else { patch.completed=false; await dbAddTask(patch); }
+  }catch(e){ return; /* error toast already shown */ }
   closeTask(); renderAll(); toast('Saved ✓');
 }
 
