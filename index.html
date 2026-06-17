@@ -461,12 +461,27 @@
 <div class="toast" id="toast"></div>
 
 <script>
+/* ============================ DATES (Pacific time, TZ-safe) ============================ */
+// All scheduling logic is anchored to America/Los_Angeles so "Tuesday" etc.
+// resolves to the Pacific calendar day regardless of the device's clock.
+const APP_TZ='America/Los_Angeles';
+function ymdInTZ(date){ return new Intl.DateTimeFormat('en-CA',{timeZone:APP_TZ,year:'numeric',month:'2-digit',day:'2-digit'}).format(date); }
+function pacificToday(){ return ymdInTZ(new Date()); }       // 'YYYY-MM-DD' in Pacific
+function parseYMD(s){ return new Date(s+'T12:00:00Z'); }     // anchor at UTC noon — never crosses a day under any TZ/DST
+function ymd(dUTC){ return dUTC.toISOString().slice(0,10); }
+function addDays(s,n){ const d=parseYMD(s); d.setUTCDate(d.getUTCDate()+n); return ymd(d); }
+function addMonths(s,n){ const d=parseYMD(s); d.setUTCMonth(d.getUTCMonth()+n); return ymd(d); }
+function addYears(s,n){ const d=parseYMD(s); d.setUTCFullYear(d.getUTCFullYear()+n); return ymd(d); }
+function dowOf(s){ return parseYMD(s).getUTCDay(); }          // 0=Sun .. 6=Sat
+function dayDiff(a,b){ return Math.round((parseYMD(b)-parseYMD(a))/864e5); }
+function niceMD(d){ return parseYMD(d).toLocaleDateString(undefined,{month:'short',day:'numeric',timeZone:'UTC'}); }
+
 /* ============================ STATE ============================ */
 const LS = {
   people:'vt_people', tasks:'vt_tasks', sb:'vt_supabase'
 };
 let state = { people:[], tasks:[], view:'all', editingId:null, parsed:[],
-  filterPerson:'', filterTag:'', tagBuffer:[], calRef:new Date(), dashCalCollapsed:false, calSelectedDate:null };
+  filterPerson:'', filterTag:'', tagBuffer:[], calRef:parseYMD(pacificToday()), dashCalCollapsed:false, calSelectedDate:null };
 let sb = null; // supabase client
 // Cloud sync — credentials are baked into the app and not user-editable.
 const SUPABASE_URL = 'https://ajutpvdjgcwjpothwhzi.supabase.co';
@@ -647,30 +662,32 @@ function parseOneTask(text){
   return out;
 }
 function extractDate(text){
-  const now=new Date(); const t=text.toLowerCase();
-  const fmt=d=>d.toISOString().slice(0,10);
+  const today=pacificToday(); const t=text.toLowerCase();
   const days=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
   // time
   let time=null; const tm=t.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
-  if(tm){ let h=+tm[1]; const m=tm[2]?+tm[2]:0; if(tm[3]==='pm'&&h<12)h+=12; if(tm[3]==='am'&&h===12)h=0; time=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0'); }
+  if(tm){ let h=+tm[1]; const mn=tm[2]?+tm[2]:0; if(tm[3]==='pm'&&h<12)h+=12; if(tm[3]==='am'&&h===12)h=0; time=String(h).padStart(2,'0')+':'+String(mn).padStart(2,'0'); }
 
   let m;
-  if((m=t.match(/\btoday\b/))){ return {date:fmt(now),time,matched:m[0]}; }
-  if((m=t.match(/\btomorrow\b/))){ const d=new Date(now);d.setDate(d.getDate()+1); return {date:fmt(d),time,matched:m[0]}; }
-  if((m=t.match(/\bin\s+(\d+)\s+days?\b/))){ const d=new Date(now);d.setDate(d.getDate()+ +m[1]); return {date:fmt(d),time,matched:m[0]}; }
-  if((m=t.match(/\bnext\s+week\b/))){ const d=new Date(now);d.setDate(d.getDate()+7); return {date:fmt(d),time,matched:m[0]}; }
+  if((m=t.match(/\btoday\b/))) return {date:today,time,matched:m[0]};
+  if((m=t.match(/\btomorrow\b/))) return {date:addDays(today,1),time,matched:m[0]};
+  if((m=t.match(/\bin\s+(\d+)\s+days?\b/))) return {date:addDays(today,+m[1]),time,matched:m[0]};
+  if((m=t.match(/\bnext\s+week\b/))) return {date:addDays(today,7),time,matched:m[0]};
   if((m=t.match(/\b(?:by|on|due|this|next)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/))){
-    const target=days.indexOf(m[1]); const d=new Date(now);
-    let add=(target-d.getDay()+7)%7; if(add===0)add=7; if(/next/.test(m[0]))add+=0;
-    d.setDate(d.getDate()+add); return {date:fmt(d),time,matched:m[0]};
+    const target=days.indexOf(m[1]); const cur=dowOf(today);
+    let add=(target-cur+7)%7; if(add===0)add=7;   // next occurrence of that weekday (Pacific)
+    return {date:addDays(today,add),time,matched:m[0]};
   }
-  // explicit month day e.g. "june 20" or "20 june"
+  // explicit month day e.g. "june 20"
   const months=['january','february','march','april','may','june','july','august','september','october','november','december'];
   if((m=t.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})/))){
-    const mi=months.findIndex(x=>x.startsWith(m[1].slice(0,3))); const d=new Date(now.getFullYear(),mi,+m[2]);
-    if(d<now) d.setFullYear(d.getFullYear()+1); return {date:fmt(d),time,matched:m[0]};
+    const mi=months.findIndex(x=>x.startsWith(m[1].slice(0,3)));
+    const pad2=n=>String(n).padStart(2,'0');
+    let yr=+today.slice(0,4); let cand=`${yr}-${pad2(mi+1)}-${pad2(+m[2])}`;
+    if(cand<today){ yr++; cand=`${yr}-${pad2(mi+1)}-${pad2(+m[2])}`; }
+    return {date:cand,time,matched:m[0]};
   }
-  if(time) return {date:fmt(now),time,matched:tm[0]};
+  if(time) return {date:today,time,matched:tm[0]};
   return null;
 }
 
@@ -831,7 +848,7 @@ function onRecFreqChange(){
   document.getElementById('f-recuntil-wrap').style.display=has?'block':'none';
   document.getElementById('f-rec-hint').style.display=has?'block':'none';
 }
-function defaultUntil(){ const d=new Date(); d.setMonth(d.getMonth()+6); return d.toISOString().slice(0,10); }
+function defaultUntil(){ return addMonths(pacificToday(),6); }
 function curRecurrence(){
   const freq=document.getElementById('f-recfreq').value;
   if(!freq) return null;
@@ -839,16 +856,15 @@ function curRecurrence(){
   return {freq, until};
 }
 function nextDue(dateStr,rec){
-  const d=new Date(dateStr+'T00:00');
+  let ns;
   switch(rec.freq){
-    case 'daily': d.setDate(d.getDate()+1); break;
-    case 'weekly': d.setDate(d.getDate()+7); break;
-    case 'biweekly': d.setDate(d.getDate()+14); break;
-    case 'monthly': d.setMonth(d.getMonth()+1); break;
-    case 'yearly': d.setFullYear(d.getFullYear()+1); break;
+    case 'daily': ns=addDays(dateStr,1); break;
+    case 'weekly': ns=addDays(dateStr,7); break;
+    case 'biweekly': ns=addDays(dateStr,14); break;
+    case 'monthly': ns=addMonths(dateStr,1); break;
+    case 'yearly': ns=addYears(dateStr,1); break;
     default: return null;
   }
-  const ns=d.toISOString().slice(0,10);
   if(rec.until && ns>rec.until) return null; // past the end date
   return ns;
 }
@@ -866,8 +882,8 @@ function reminderFireTime(task,rule,date){
 }
 function dueReminders(){
   const now=new Date(); const out=[];
-  const lo=new Date(now.getTime()-40*864e5).toISOString().slice(0,10);
-  const hi=new Date(now.getTime()+2*864e5).toISOString().slice(0,10);
+  const lo=addDays(pacificToday(),-40);
+  const hi=addDays(pacificToday(),2);
   state.tasks.forEach(t=>{
     if(!(t.reminders||[]).length) return;
     const dates = (t.recurrence && t.due_date) ? taskOccurrenceDates(t).filter(d=>d>=lo&&d<=hi) : (t.due_date?[t.due_date]:[]);
@@ -980,7 +996,7 @@ function instancesForDate(ds){
   return items.sort((a,b)=>(a.completed-b.completed)||(a.task.priority-b.task.priority));
 }
 function viewInstances(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=pacificToday();
   let items=allInstances();
   const v=state.view;
   if(v==='done') return items.filter(i=>i.completed);
@@ -1017,7 +1033,7 @@ function renderList(){
   if(!items.length){ el.innerHTML=dash+fb+`<div class="empty"><div class="big">🗒️</div>No tasks here yet.<br>Dictate or add one above.</div>`; return; }
 
   const groups={};
-  const today=new Date().toISOString().slice(0,10);
+  const today=pacificToday();
   items.forEach(i=>{
     let g;
     if(state.view==='done') g='Completed';
@@ -1040,17 +1056,17 @@ function renderList(){
     return `<div class="group-h">${g} <span class="g-count">${arr.length}</span></div><ul class="tasklist">${arr.map(instanceHTML).join('')}</ul>`;
   }).join('');
 }
-function calMove(delta){ const d=new Date(state.calRef); d.setMonth(d.getMonth()+delta); state.calRef=d; renderList(); }
-function calToday(){ state.calRef=new Date(); renderList(); }
+function calMove(delta){ const d=new Date(state.calRef); d.setUTCMonth(d.getUTCMonth()+delta); state.calRef=d; renderList(); }
+function calToday(){ state.calRef=parseYMD(pacificToday()); renderList(); }
 function toggleDashCal(){ state.dashCalCollapsed=!state.dashCalCollapsed; renderList(); }
-function calMonthLabel(){ return state.calRef.toLocaleDateString(undefined,{month:'long',year:'numeric'}); }
+function calMonthLabel(){ return state.calRef.toLocaleDateString(undefined,{month:'long',year:'numeric',timeZone:'UTC'}); }
 function dotColor(assignee_id){ return assignee_id ? colorFor(assignee_id) : '#c4bcab'; }
 function calGridHTML(maxPerDay,dots){
   maxPerDay=maxPerDay||3;
-  const ref=state.calRef; const y=ref.getFullYear(), m=ref.getMonth();
-  const startDow=new Date(y,m,1).getDay();
-  const daysInMonth=new Date(y,m+1,0).getDate();
-  const todayStr=new Date().toISOString().slice(0,10);
+  const ref=state.calRef; const y=ref.getUTCFullYear(), m=ref.getUTCMonth();
+  const startDow=new Date(Date.UTC(y,m,1)).getUTCDay();
+  const daysInMonth=new Date(Date.UTC(y,m+1,0)).getUTCDate();
+  const todayStr=pacificToday();
   // bucket every occurrence (recurring expanded) onto its date
   const byDate={};
   applyFilters(state.tasks.slice()).forEach(t=>{
@@ -1063,7 +1079,7 @@ function calGridHTML(maxPerDay,dots){
   const dow=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-dow">${d}</div>`).join('');
   let cells='';
   const pad=(yy,mm,dd)=>`${yy}-${String(mm+1).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
-  const prevDays=new Date(y,m,0).getDate();
+  const prevDays=new Date(Date.UTC(y,m,0)).getUTCDate();
   for(let i=startDow-1;i>=0;i--){ const dd=prevDays-i; cells+=`<div class="cal-cell dim"><div class="dnum">${dd}</div></div>`; }
   for(let d=1;d<=daysInMonth;d++){
     const ds=pad(y,m,d);
@@ -1142,7 +1158,7 @@ function renderCalendar(el){
 function instanceHTML(inst){
   const t=inst.task; const date=inst.date; const done=inst.completed;
   const p=personOf(t.assignee_id);
-  const today=new Date().toISOString().slice(0,10);
+  const today=pacificToday();
   let dueTag='';
   if(date){
     let cls='due', label=fmtDate(date);
@@ -1196,16 +1212,14 @@ function colorFor(id){ const i=state.people.findIndex(p=>p.id===id); return PALE
 function initials(n){ return n.trim().split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase(); }
 function esc(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtDate(d){
-  const dt=new Date(d+'T00:00'); const today=new Date(); today.setHours(0,0,0,0);
-  const diff=Math.round((dt-today)/864e5);
+  const diff=dayDiff(pacificToday(),d);
   if(diff===0)return 'Today'; if(diff===1)return 'Tomorrow'; if(diff===-1)return 'Yesterday';
-  return dt.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  return niceMD(d);
 }
 function fmtDateLong(d){
-  const dt=new Date(d+'T00:00'); const today=new Date(); today.setHours(0,0,0,0);
-  const diff=Math.round((dt-today)/864e5);
-  const wk=dt.toLocaleDateString(undefined,{weekday:'long'});
-  const md=dt.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  const diff=dayDiff(pacificToday(),d);
+  const wk=parseYMD(d).toLocaleDateString(undefined,{weekday:'long',timeZone:'UTC'});
+  const md=niceMD(d);
   if(diff===0)return `Today · ${md}`; if(diff===1)return `Tomorrow · ${md}`;
   return `${wk} · ${md}`;
 }
@@ -1253,7 +1267,7 @@ function playComplete(){
 }
 
 function updateCounts(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=pacificToday();
   // count occurrences (filters ignored for sidebar totals)
   const inst=[];
   state.tasks.forEach(t=>{
