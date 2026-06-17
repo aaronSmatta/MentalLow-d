@@ -241,6 +241,14 @@
   .cal-ev:hover{filter:brightness(.97);transform:translateX(1px)}
   .cal-more{font-size:10.5px;color:var(--muted);font-weight:600;cursor:pointer;padding:1px 6px;border-radius:6px}
   .cal-more:hover{background:var(--bg);color:var(--accent-dark)}
+  /* assignee color dots (dashboard calendar) */
+  .cal-dots{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;align-content:flex-start}
+  .cal-dot{width:10px;height:10px;border-radius:50%;display:inline-block;box-shadow:0 0 0 1px rgba(0,0,0,.06) inset}
+  .cal-dot.done{opacity:.32}
+  .cal-dot-more{font-size:9.5px;color:var(--muted);font-weight:700;line-height:10px}
+  .cal-legend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 12px;font-size:11.5px;color:var(--muted)}
+  .cal-legend .leg{display:inline-flex;align-items:center;gap:5px;font-weight:600}
+  .cal-legend .leg-hint{color:var(--muted2);font-weight:500}
   .cal-cell{cursor:pointer}
   .cal-cell.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
   .cal-cell.sel:not(.dim):hover{box-shadow:0 0 0 2px var(--accent-soft),0 6px 16px rgba(47,43,37,.08)}
@@ -257,6 +265,7 @@
   @media(hover:none){ .t-actions{opacity:1} }
   /* Dashboard calendar card */
   .dash-cal{background:var(--panel);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;margin-bottom:20px;box-shadow:var(--shadow)}
+  .dash-cal .cal-cell{min-height:74px}
   .dash-cal-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
   .dash-cal-head .ttl{font-weight:700;font-size:14px;flex:1}
   .dash-cal-head .mn{font-size:13px;color:var(--muted);font-weight:600;min-width:120px;text-align:center}
@@ -1035,7 +1044,8 @@ function calMove(delta){ const d=new Date(state.calRef); d.setMonth(d.getMonth()
 function calToday(){ state.calRef=new Date(); renderList(); }
 function toggleDashCal(){ state.dashCalCollapsed=!state.dashCalCollapsed; renderList(); }
 function calMonthLabel(){ return state.calRef.toLocaleDateString(undefined,{month:'long',year:'numeric'}); }
-function calGridHTML(maxPerDay){
+function dotColor(assignee_id){ return assignee_id ? colorFor(assignee_id) : '#c4bcab'; }
+function calGridHTML(maxPerDay,dots){
   maxPerDay=maxPerDay||3;
   const ref=state.calRef; const y=ref.getFullYear(), m=ref.getMonth();
   const startDow=new Date(y,m,1).getDay();
@@ -1058,13 +1068,26 @@ function calGridHTML(maxPerDay){
   for(let d=1;d<=daysInMonth;d++){
     const ds=pad(y,m,d);
     const evs=(byDate[ds]||[]).sort((a,b)=>a.task.priority-b.task.priority);
-    const shown=evs.slice(0,maxPerDay).map(ev=>{
-      const t=ev.task; const pcls=t.priority<=3?('p'+t.priority):'';
-      return `<div class="cal-ev ${pcls} ${ev.completed?'done':''}" title="${esc(t.title)}" onclick="event.stopPropagation();openTask('${t.id}')">${t.recurrence?'🔁 ':''}${esc(t.title)}</div>`;
-    }).join('');
-    const more=evs.length>maxPerDay?`<div class="cal-more" onclick="event.stopPropagation();selectCalDate('${ds}')">+${evs.length-maxPerDay} more</div>`:'';
+    let content;
+    if(dots){
+      // color-coded dots by assigned user; click the day to see details
+      const cap=8;
+      const ds_=evs.slice(0,cap).map(ev=>{
+        const t=ev.task; const an=t.assignee_id?(personOf(t.assignee_id)?.name||'Someone'):'Unassigned';
+        return `<span class="cal-dot ${ev.completed?'done':''}" style="background:${dotColor(t.assignee_id)}" title="${esc(t.title)} — ${esc(an)}"></span>`;
+      }).join('');
+      const dmore=evs.length>cap?`<span class="cal-dot-more">+${evs.length-cap}</span>`:'';
+      content = evs.length?`<div class="cal-dots">${ds_}${dmore}</div>`:'';
+    } else {
+      const shown=evs.slice(0,maxPerDay).map(ev=>{
+        const t=ev.task; const pcls=t.priority<=3?('p'+t.priority):'';
+        return `<div class="cal-ev ${pcls} ${ev.completed?'done':''}" title="${esc(t.title)}" onclick="event.stopPropagation();openTask('${t.id}')">${t.recurrence?'🔁 ':''}${esc(t.title)}</div>`;
+      }).join('');
+      const more=evs.length>maxPerDay?`<div class="cal-more" onclick="event.stopPropagation();selectCalDate('${ds}')">+${evs.length-maxPerDay} more</div>`:'';
+      content = shown+more;
+    }
     const sel = ds===state.calSelectedDate?' sel':'';
-    cells+=`<div class="cal-cell ${ds===todayStr?'today':''}${sel}" onclick="selectCalDate('${ds}')"><div class="dnum">${d}</div>${shown}${more}</div>`;
+    cells+=`<div class="cal-cell ${ds===todayStr?'today':''}${sel}" onclick="selectCalDate('${ds}')"><div class="dnum">${d}</div>${content}</div>`;
   }
   const total=startDow+daysInMonth; const trail=(7-(total%7))%7;
   for(let i=1;i<=trail;i++){ cells+=`<div class="cal-cell dim"><div class="dnum">${i}</div></div>`; }
@@ -1096,9 +1119,15 @@ function dashCalHTML(){
       </div>
       <button class="btn sm ghost" onclick="toggleDashCal()">${state.dashCalCollapsed?'Show':'Hide'}</button>
     </div>
-    ${calGridHTML(2)}
+    ${state.dashCalCollapsed?'':calLegendHTML()}
+    ${calGridHTML(2,true)}
     ${state.dashCalCollapsed?'':calDetailHTML()}
   </div>`;
+}
+function calLegendHTML(){
+  if(!state.people.length) return '';
+  const ppl=state.people.map(p=>`<span class="leg"><span class="cal-dot" style="background:${colorFor(p.id)}"></span>${esc(p.name)}</span>`).join('');
+  return `<div class="cal-legend">${ppl}<span class="leg"><span class="cal-dot" style="background:${dotColor(null)}"></span>Unassigned</span><span class="leg-hint">· click a day for details</span></div>`;
 }
 function renderCalendar(el){
   el.innerHTML=`${filterBarHTML()}
